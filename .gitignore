@@ -1,0 +1,26 @@
+# Root / IDE
+.vscode/
+.cursor/
+*.log
+.DS_Store
+
+# Environment Variables
+.env
+.env*.local
+weft-backend/.env
+weft-ui/.env*
+
+# Python Backend
+weft-backend/venv/
+weft-backend/**/__pycache__/
+weft-backend/**/*.pyc
+weft-backend/.pytest_cache/
+
+# Next.js Frontend
+weft-ui/node_modules/
+weft-ui/.next/
+weft-ui/out/
+weft-ui/build/
+weft-ui/.vercel/
+weft-ui/next-env.d.ts
+weft-ui/*.tsbuildinfo

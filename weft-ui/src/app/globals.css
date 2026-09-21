@@ -1,0 +1,89 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  height: 100%;
+  background: #09090b;
+}
+
+@keyframes caret-blink {
+  0%,
+  45% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes signal-flash {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgb(251 191 36 / 0.45);
+    opacity: 1;
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgb(251 191 36 / 0);
+    opacity: 0.72;
+  }
+}
+
+@keyframes live-ping {
+  0% {
+    transform: scale(1);
+    opacity: 0.75;
+  }
+  70% {
+    transform: scale(2.4);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(2.4);
+    opacity: 0;
+  }
+}
+
+@keyframes thought-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@theme inline {
+  --animate-caret: caret-blink 1.05s steps(1) infinite;
+  --animate-signal: signal-flash 1.15s ease-in-out infinite;
+  --animate-live: live-ping 1.6s cubic-bezier(0, 0, 0.2, 1) infinite;
+  --animate-thought: thought-in 0.35s ease-out both;
+}
+
+.caret {
+  display: inline-block;
+  width: 0.45rem;
+  height: 1.05em;
+  margin-left: 1px;
+  vertical-align: text-bottom;
+  background: #a1a1aa;
+  animation: caret-blink 1.05s steps(1) infinite;
+}
+
+.live-ping {
+  animation: live-ping 1.6s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+
+.signal-badge {
+  animation: signal-flash 1.15s ease-in-out infinite;
+}
+
+.thought-row {
+  animation: thought-in 0.4s ease-out both;
+}
