@@ -1,17 +1,20 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from "react";
-import { 
-  Play, 
-  RotateCcw, 
-  Terminal, 
-  Zap, 
-  FileText, 
-  CheckCircle2, 
+import React, { useCallback, useRef, useState } from "react";
+import { LiveKitRoom, useDataChannel } from "@livekit/components-react";
+import {
+  Play,
+  RotateCcw,
+  Terminal,
+  Zap,
+  FileText,
+  CheckCircle2,
   AlertTriangle,
   Layers,
-  Cpu
+  Cpu,
 } from "lucide-react";
+
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 interface SignalData {
   id: string;
@@ -22,6 +25,34 @@ interface SignalData {
   latency_ms: number;
 }
 
+interface LiveKitSession {
+  token: string;
+  url: string;
+  room: string;
+  sessionId: string;
+}
+
+type EngineEvent =
+  | { type: "agent_thought"; agent: string; text: string }
+  | { type: "moss_signal"; signal: SignalData }
+  | { type: "canvas_update"; content: string };
+
+function EngineDataChannel({
+  onEvent,
+}: {
+  onEvent: (event: EngineEvent) => void;
+}) {
+  useDataChannel("weft", (msg) => {
+    try {
+      const decoded = new TextDecoder().decode(msg.payload);
+      onEvent(JSON.parse(decoded) as EngineEvent);
+    } catch {
+      /* ignore malformed packets */
+    }
+  });
+  return null;
+}
+
 export default function WeftWorkspace() {
   const [isRunning, setIsRunning] = useState(false);
   const [researcherLogs, setResearcherLogs] = useState<string[]>([]);
@@ -30,45 +61,78 @@ export default function WeftWorkspace() {
   const [canvasContent, setCanvasContent] = useState<string>(
     "# Collaborative Report: AI Agent Architectures\n\n*Click 'Launch Autonomous Workflow' to observe real-time agent coordination via Weft Shared Memory.*"
   );
-  
-  const wsRef = useRef<WebSocket | null>(null);
+  const [lkSession, setLkSession] = useState<LiveKitSession | null>(null);
+  const startedRef = useRef(false);
 
-  const startSession = () => {
+  const handleEngineEvent = useCallback((data: EngineEvent) => {
+    if (data.type === "agent_thought") {
+      if (data.agent === "researcher") {
+        setResearcherLogs((prev) => [...prev, data.text]);
+      } else if (data.agent === "writer") {
+        setWriterLogs((prev) => [...prev, data.text]);
+      }
+    } else if (data.type === "moss_signal") {
+      setActiveSignal(data.signal);
+    } else if (data.type === "canvas_update") {
+      setCanvasContent(data.content);
+    }
+  }, []);
+
+  const startSession = async () => {
     setIsRunning(true);
     setResearcherLogs([]);
     setWriterLogs([]);
     setActiveSignal(null);
     setCanvasContent("# Collaborative Report: Initializing Agents...");
+    startedRef.current = false;
 
-    // Connect to FastAPI WebSocket
-    const ws = new WebSocket("ws://localhost:8000/ws/session-demo-01");
-    wsRef.current = ws;
-
-    ws.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-
-      if (data.type === "agent_thought") {
-        if (data.agent === "researcher") {
-          setResearcherLogs((prev) => [...prev, data.text]);
-        } else if (data.agent === "writer") {
-          setWriterLogs((prev) => [...prev, data.text]);
-        }
-      } else if (data.type === "moss_signal") {
-        setActiveSignal(data.signal);
-      } else if (data.type === "canvas_update") {
-        setCanvasContent(data.content);
+    const sessionId = `weft${Date.now()}`;
+    try {
+      const res = await fetch(`${API_BASE}/api/token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          session_id: sessionId,
+          identity: `operator-${sessionId}`,
+        }),
+      });
+      if (!res.ok) {
+        throw new Error(`Token request failed (${res.status})`);
       }
-    };
-
-    ws.onclose = () => {
+      const data = await res.json();
+      setLkSession({
+        token: data.token,
+        url: data.url,
+        room: data.room,
+        sessionId: data.session_id,
+      });
+    } catch (error) {
       setIsRunning(false);
-    };
+      setCanvasContent(
+        `# Collaborative Report: Connection Error\n\nCould not mint a LiveKit token.\n\n${
+          error instanceof Error ? error.message : "Unknown error"
+        }`
+      );
+    }
+  };
+
+  const startAgents = async () => {
+    if (!lkSession || startedRef.current) return;
+    startedRef.current = true;
+    await fetch(`${API_BASE}/api/session/init`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        session_id: lkSession.sessionId,
+        room_name: lkSession.room,
+        goal: "Competitive analysis of AI coding assistants and in-process shared memory architectures",
+      }),
+    });
   };
 
   const resetSession = () => {
-    if (wsRef.current) {
-      wsRef.current.close();
-    }
+    startedRef.current = false;
+    setLkSession(null);
     setIsRunning(false);
     setActiveSignal(null);
     setResearcherLogs([]);
@@ -78,7 +142,7 @@ export default function WeftWorkspace() {
     );
   };
 
-  return (
+  const shell = (
     <div className="flex flex-col h-screen bg-zinc-950 text-zinc-100 font-sans">
       {/* Top Header */}
       <header className="h-14 border-b border-zinc-800 px-6 flex items-center justify-between bg-zinc-900/50 backdrop-blur-md">
@@ -237,5 +301,35 @@ export default function WeftWorkspace() {
         </div>
       </div>
     </div>
+  );
+
+  if (!lkSession) {
+    return shell;
+  }
+
+  return (
+    <LiveKitRoom
+      serverUrl={lkSession.url}
+      token={lkSession.token}
+      connect
+      audio={false}
+      video={false}
+      className="h-screen"
+      onConnected={() => {
+        void startAgents();
+      }}
+      onDisconnected={() => {
+        setIsRunning(false);
+      }}
+      onError={(error) => {
+        setCanvasContent(
+          `# Collaborative Report: LiveKit Error\n\n${error.message}`
+        );
+        setIsRunning(false);
+      }}
+    >
+      <EngineDataChannel onEvent={handleEngineEvent} />
+      {shell}
+    </LiveKitRoom>
   );
 }
