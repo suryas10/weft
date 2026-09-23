@@ -67,7 +67,7 @@ export default function WeftWorkspace() {
   const [writerLogs, setWriterLogs] = useState<string[]>([]);
   const [activeSignal, setActiveSignal] = useState<SignalData | null>(null);
   const [canvasContent, setCanvasContent] = useState<string>(
-    "# Collaborative Report: AI Agent Architectures\n\n*Click 'Launch Autonomous Workflow' to observe real-time agent coordination via Weft Shared Memory.*"
+    "# Phase 3 CAR-T Therapy \u2014 Active Patient Enrollment Plan\n\n*Click 'Launch Autonomous Workflow' to observe real-time clinical safety agent coordination via Weft Shared Memory.*"
   );
   const [isPivoting, setIsPivoting] = useState(false);
   const [staleContent, setStaleContent] = useState<string | null>(null);
@@ -148,7 +148,7 @@ export default function WeftWorkspace() {
       body: JSON.stringify({
         session_id: lkSession.sessionId,
         room_name: lkSession.room,
-        goal: "Competitive analysis of AI coding assistants and in-process shared memory architectures",
+        goal: "Phase 3 CAR-T oncology therapy rollout: evaluate patient enrollment readiness, site safety protocols, and real-time FDA/EMA adverse event signals",
       }),
     });
   };
@@ -161,7 +161,7 @@ export default function WeftWorkspace() {
     setResearcherLogs([]);
     setWriterLogs([]);
     setCanvasContent(
-      "# Collaborative Report: AI Agent Architectures\n\n*Ready for execution.*"
+      "# Phase 3 CAR-T Therapy \u2014 Active Patient Enrollment Plan\n\n*Ready for execution.*"
     );
     setIsPivoting(false);
     setStaleContent(null);
@@ -211,7 +211,7 @@ export default function WeftWorkspace() {
           <div className="max-w-3xl w-full mx-auto flex flex-col gap-4">
             <div className="flex items-center gap-2 text-zinc-500 text-xs font-mono">
               <FileText className="w-4 h-4 text-zinc-400" />
-              <span>LIVE ARTIFACT CANVAS &bull; REAL-TIME AGENT OUTPUT</span>
+              <span>LIVE CLINICAL CANVAS &bull; REAL-TIME AGENT OUTPUT</span>
               {isPivoting && (
                 <span className="ml-auto flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-amber-950/60 border border-amber-600/40 text-amber-400 text-[10px] font-semibold animate-pulse">
                   <Zap className="w-3 h-3 fill-amber-400" />
@@ -235,7 +235,7 @@ export default function WeftWorkspace() {
                     }}
                   />
                   <div className="absolute top-2 right-3 text-[10px] font-bold text-rose-500 uppercase tracking-widest">
-                    STALE — ABORTED
+                    ENROLLMENT PLAN SUSPENDED
                   </div>
                 </div>
 
@@ -244,7 +244,7 @@ export default function WeftWorkspace() {
                   <div className="flex items-start gap-2 bg-amber-950/30 border border-amber-700/40 rounded-lg p-3 text-xs font-mono text-amber-300">
                     <AlertTriangle className="w-4 h-4 text-amber-400 mt-0.5 flex-shrink-0" />
                     <div>
-                      <span className="font-bold text-amber-400">ABORT REASON: </span>
+                      <span className="font-bold text-amber-400">CLINICAL HOLD TRIGGER: </span>
                       {pivotReason}
                     </div>
                   </div>
@@ -261,7 +261,7 @@ export default function WeftWorkspace() {
                       />
                     ))}
                   </div>
-                  Generating pivoted analysis from Moss memory…
+                  Generating Clinical Hold Risk Assessment from Moss safety memory…
                 </div>
               </div>
             ) : (
@@ -289,7 +289,7 @@ export default function WeftWorkspace() {
             <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-3 flex flex-col gap-2">
               <div className="flex items-center justify-between border-b border-zinc-800 pb-2">
                 <span className="text-xs font-semibold text-blue-400 flex items-center gap-1.5">
-                  <Terminal className="w-3.5 h-3.5" /> Researcher Agent
+                  <Terminal className="w-3.5 h-3.5" /> Clinical Safety Researcher
                 </span>
                 <span className="text-[10px] text-zinc-500 font-mono">Parallel Worker 1</span>
               </div>
@@ -348,7 +348,7 @@ export default function WeftWorkspace() {
             <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-3 flex flex-col gap-2">
               <div className="flex items-center justify-between border-b border-zinc-800 pb-2">
                 <span className="text-xs font-semibold text-purple-400 flex items-center gap-1.5">
-                  <Terminal className="w-3.5 h-3.5" /> Writer Agent
+                  <Terminal className="w-3.5 h-3.5" /> Clinical Trial Writer
                 </span>
                 <span className="text-[10px] text-zinc-500 font-mono">Parallel Worker 2</span>
               </div>

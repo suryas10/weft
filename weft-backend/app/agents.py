@@ -65,15 +65,24 @@ _JITTER_FACTOR = 0.25     # ±25 % random jitter
 # ── System prompts ───────────────────────────────────────────────────────────────────────
 
 RESEARCHER_SYSTEM = (
-    "You are the Weft Researcher agent. Investigate the competitive landscape of "
-    "AI coding assistants (Cursor, GitHub Copilot, Windsurf, Replit, Claude Code). "
-    "Return concise, factual findings. Flag obsolete or stale sources explicitly."
+    "You are the Weft Clinical Safety Researcher agent embedded in a Phase 3 "
+    "CAR-T cell therapy trial programme. Your role is to continuously monitor "
+    "FDA MedWatch, EMA safety communications, ClinicalTrials.gov, and "
+    "peer-reviewed oncology literature for Grade 3–4 adverse events, regulatory "
+    "holds, and emerging neurotoxicity (ICANS) or cytokine release syndrome (CRS) "
+    "signals that could affect the active trial. Return concise, source-attributed "
+    "safety summaries. Flag any signal that would require a protocol deviation or "
+    "IND safety report within 15 calendar days."
 )
 
 WRITER_SYSTEM = (
-    "You are the Weft Writer agent. Produce polished Markdown for a Competitive "
-    "Analysis Report. Write like a Notion document: headings, short paragraphs, "
-    "no preamble."
+    "You are the Weft Clinical Trial Writer agent. Produce precise, regulatory-grade "
+    "Markdown documents for a Phase 3 CAR-T oncology therapy programme. "
+    "Write like a Notion document used by a trial medical monitor: headings, "
+    "short action-oriented paragraphs, no preamble. When a Clinical Hold is "
+    "signalled, immediately pivot from enrollment planning to a structured "
+    "Clinical Hold Risk Assessment covering patient safety, regulatory obligations, "
+    "and site communication protocols."
 )
 
 
@@ -327,8 +336,9 @@ async def llm_until_abort(
 
 async def researcher_worker(session_id: str, room_name: str, goal: str) -> None:
     """
-    Researcher agent: queries Gemini for competitive intelligence, evaluates
-    source freshness, and writes ABORT_TASK to Moss if stale data is detected.
+    Clinical Safety Researcher agent: queries Gemini for CAR-T safety data,
+    neurotoxicity profiles, and active FDA/EMA communications. Writes
+    ABORT_TASK to Moss if a safety signal would invalidate the enrollment plan.
     All LLM calls are protected by the exponential back-off in call_hidevs_llm.
     """
     await publish_to_room(
@@ -336,17 +346,22 @@ async def researcher_worker(session_id: str, room_name: str, goal: str) -> None:
         {
             "type": "agent_thought",
             "agent": "researcher",
-            "text": "Querying Gemini 3.6 Flash for live competitive intelligence…",
+            "text": "Querying Gemini 3.6 Flash for CAR-T Phase 3 safety landscape and active FDA signals…",
         },
     )
 
     findings = await call_hidevs_llm(
         RESEARCHER_SYSTEM,
         (
-            f"Goal: {goal}\n"
-            "1) Summarize current competitive positioning for AI coding assistants in 2026.\n"
-            "2) Call out any datasets, market-share figures, or product versions that look obsolete.\n"
-            "Keep it under 180 words."
+            f"Trial goal: {goal}\n\n"
+            "1) Summarise the current safety profile of approved CAR-T therapies "
+            "(axicabtagene, tisagenlecleucel, lisocabtagene) — focus on Grade 3–4 ICANS "
+            "and CRS incidence rates from 2024–2026 trials.\n"
+            "2) List any FDA MedWatch or EMA PRAC safety communications issued in the "
+            "last 12 months relating to CAR-T neurotoxicity.\n"
+            "3) Flag any parallel trials in the same target antigen space that have "
+            "received a clinical hold or required a protocol amendment.\n"
+            "Keep findings under 200 words. Cite source type (FDA, EMA, PubMed)."
         ),
     )
     await moss_bus.add_finding(session_id, findings)
@@ -359,27 +374,29 @@ async def researcher_worker(session_id: str, room_name: str, goal: str) -> None:
         },
     )
 
-    freshness = await call_hidevs_llm(
+    safety_check = await call_hidevs_llm(
         RESEARCHER_SYSTEM,
         (
-            f"Given these findings:\n{findings}\n\n"
-            "If any cited data, version, or benchmark is stale versus 2026 (for example "
-            "pre-Cursor 2.0, Copilot 2024/2025 share tables, or cloud RAG latency assumptions), "
-            "reply with exactly two lines:\n"
-            "ABORT: yes\nREASON: <one sentence>\n"
-            "Otherwise reply:\nABORT: no\nREASON: sources look current."
+            f"Given these safety findings:\n{findings}\n\n"
+            "Does any finding represent an emergent safety signal that would require "
+            "the trial medical monitor to issue a Clinical Hold notification, protocol "
+            "deviation report, or IND safety report — specifically Grade 4 ICANS or "
+            "a regulatory hold on a parallel CAR-T trial?\n\n"
+            "If yes, reply with exactly two lines:\n"
+            "ABORT: yes\nREASON: <one sentence describing the specific safety signal>\n"
+            "If no, reply:\nABORT: no\nREASON: safety profile within expected parameters."
         ),
     )
-    await moss_bus.add_finding(session_id, freshness)
+    await moss_bus.add_finding(session_id, safety_check)
 
     abort_line = next(
-        (line for line in freshness.splitlines() if line.upper().startswith("ABORT:")),
-        freshness,
+        (line for line in safety_check.splitlines() if line.upper().startswith("ABORT:")),
+        safety_check,
     )
     should_abort = "yes" in abort_line.lower() and "no" not in abort_line.lower()
 
     if should_abort:
-        reason = freshness.split("REASON:", 1)[-1].strip() if "REASON:" in freshness else freshness
+        reason = safety_check.split("REASON:", 1)[-1].strip() if "REASON:" in safety_check else safety_check
         signal = await moss_bus.write_signal(
             session_id=session_id,
             sender="researcher",
@@ -398,7 +415,7 @@ async def researcher_worker(session_id: str, room_name: str, goal: str) -> None:
             {
                 "type": "agent_thought",
                 "agent": "researcher",
-                "text": f"Pushed ABORT_TASK to Moss SessionIndex ({signal.latency_ms}ms).",
+                "text": f"⚠ ABORT_TASK written to Moss SessionIndex ({signal.latency_ms}ms). Halting enrollment plan.",
             },
         )
     else:
@@ -407,7 +424,7 @@ async def researcher_worker(session_id: str, room_name: str, goal: str) -> None:
             {
                 "type": "agent_thought",
                 "agent": "researcher",
-                "text": "Sources look current. No abort signal written.",
+                "text": "Safety profile within expected parameters. No abort signal written.",
             },
         )
 
@@ -418,25 +435,41 @@ async def writer_worker(
     session_id: str, room_name: str, goal: str
 ) -> tuple[str, Optional[Signal]]:
     """
-    Writer agent: drafts a Competitive Analysis Report section-by-section,
-    reading Moss memory on each iteration and halting immediately on ABORT_TASK.
+    Clinical Trial Writer agent: drafts an Active Patient Enrollment Plan
+    section-by-section, reading Moss safety memory on each iteration.
+    Halts immediately on ABORT_TASK and pivots to a Clinical Hold Risk Assessment.
 
     Returns (final_canvas, aborted_signal) so the orchestration loop can
     track the most recent canvas content when routing signals.
     """
-    canvas = "# Competitive Analysis Report\n\n"
+    canvas = "# Phase 3 CAR-T Therapy — Active Patient Enrollment Plan\n\n"
     await publish_to_room(
         room_name,
         {
             "type": "canvas_update",
-            "content": canvas + "*Writer connected. Drafting from live research…*",
+            "content": canvas + "*Clinical Trial Writer connected. Drafting enrollment plan from safety research…*",
         },
     )
 
     sections = [
-        "Write only §1 Executive Summary (Markdown). 2 short paragraphs.",
-        "Write only §2 Market landscape (Markdown). Compare 3 products. Use the latest facts you have.",
-        "Write only §3 Architecture implications (Markdown). Contrast cloud vector DBs vs in-process shared memory.",
+        (
+            "Write only §1 Enrollment Eligibility & Inclusion Criteria (Markdown). "
+            "Define target patient population for the Phase 3 CAR-T trial: "
+            "age range, prior therapy requirements, ECOG performance status, "
+            "and key exclusion criteria. 2–3 short paragraphs."
+        ),
+        (
+            "Write only §2 Site Activation & Screening Protocol (Markdown). "
+            "Detail the site readiness checklist, apheresis scheduling, "
+            "and screening visit cadence. Reference current CAR-T manufacturing "
+            "lead times. 2–3 short paragraphs."
+        ),
+        (
+            "Write only §3 Safety Monitoring & Adverse Event Reporting (Markdown). "
+            "Specify ICANS and CRS grading thresholds, tocilizumab dosing protocol "
+            "on-site requirements, and 15-day IND safety report triggers. "
+            "2–3 short paragraphs."
+        ),
     ]
 
     aborted: Optional[Signal] = None
@@ -446,23 +479,23 @@ async def writer_worker(
             {
                 "type": "agent_thought",
                 "agent": "writer",
-                "text": f"Generating section {index}/{len(sections)}… polling Moss each loop.",
+                "text": f"Drafting enrollment plan section {index}/{len(sections)}… polling Moss safety bus each loop.",
             },
         )
 
         memory_hits, moss_ms = await moss_bus.query_memory(
-            session_id, "competitive findings market share abort obsolete"
+            session_id, "CAR-T safety ICANS CRS clinical hold FDA neurotoxicity enrollment"
         )
         aborted = await moss_bus.detect_abort(session_id)
         if aborted:
             break
 
-        context = "\n".join(memory_hits) if memory_hits else "(no Moss findings yet)"
+        context = "\n".join(memory_hits) if memory_hits else "(no Moss safety findings yet)"
         draft, aborted = await llm_until_abort(
             session_id,
             WRITER_SYSTEM,
             (
-                f"Goal: {goal}\nMoss memory ({moss_ms}ms):\n{context}\n\n"
+                f"Trial goal: {goal}\nMoss safety memory ({moss_ms}ms):\n{context}\n\n"
                 f"{instruction}\nDo not repeat previous sections."
             ),
         )
@@ -484,24 +517,32 @@ async def writer_worker(
                 "type": "agent_thought",
                 "agent": "writer",
                 "text": (
-                    f"[SIGNAL DETECTED: {aborted.signal_type} in {aborted.latency_ms}ms] "
-                    "Halting generation. Pivoting canvas from Moss memory."
+                    f"⚠ [SIGNAL DETECTED: {aborted.signal_type} in {aborted.latency_ms}ms] "
+                    "Halting enrollment plan. Pivoting to Clinical Hold Risk Assessment."
                 ),
             },
         )
         memory_hits, _ = await moss_bus.query_memory(
-            session_id, "ABORT_TASK obsolete competitive 2026 Cursor in-process memory"
+            session_id, "ABORT_TASK clinical hold ICANS neurotoxicity FDA CAR-T safety signal"
         )
         pivoted, _ = await llm_until_abort(
             session_id,
             WRITER_SYSTEM,
             (
-                "The previous draft is obsolete. Rewrite the FULL Competitive Analysis Report "
-                "in Markdown. Pivot immediately based on this Moss memory:\n"
-                f"{chr(10).join(memory_hits)}\n"
-                f"Abort reason: {aborted.message}\n"
-                "Lead with the real-time / in-process memory shift. "
-                "Do not rely on stale 2024–2025 share tables."
+                "URGENT: The active patient enrollment plan is immediately suspended. "
+                "Rewrite the entire document as a Clinical Hold Risk Assessment in Markdown.\n\n"
+                "Structure the assessment as:\n"
+                "# Clinical Hold Risk Assessment — Phase 3 CAR-T Therapy\n\n"
+                "## 1. Clinical Hold Trigger\n"
+                "## 2. Affected Patient Population & Immediate Safety Actions\n"
+                "## 3. Regulatory Obligations (IND Safety Report, FDA Notification Timeline)\n"
+                "## 4. Site Communication Protocol\n"
+                "## 5. Resumption Criteria\n\n"
+                f"Moss safety intelligence ({len(memory_hits)} documents):\n"
+                f"{chr(10).join(memory_hits)}\n\n"
+                f"Clinical hold trigger: {aborted.message}\n\n"
+                "Be precise. This document will be reviewed by the trial medical monitor and "
+                "submitted to the FDA within 15 calendar days."
             ),
         )
         if pivoted:
@@ -515,7 +556,7 @@ async def writer_worker(
             {
                 "type": "agent_thought",
                 "agent": "writer",
-                "text": "Draft complete. No abort signal in Moss SessionIndex.",
+                "text": "Enrollment plan complete. No safety hold signal in Moss SessionIndex.",
             },
         )
 
@@ -526,8 +567,10 @@ async def writer_worker(
 
 _DEMO_ABORT_DELAY = 2.0   # seconds after Writer starts before forcing the signal
 _DEMO_ABORT_MESSAGE = (
-    "Windsurf just released Cascade 2.0, invalidating all current "
-    "benchmark comparisons and market-share figures in the draft."
+    "FDA placed immediate clinical hold on parallel CAR-T trial (NCT05█████) "
+    "due to Grade 4 neurotoxicity (ICANS) — two patient fatalities reported. "
+    "All active enrollment must cease pending medical monitor review and "
+    "FDA IND safety report submission within 15 calendar days."
 )
 
 async def _demo_abort_injector(session_id: str, room_name: str) -> None:
@@ -657,23 +700,30 @@ async def run_multiagent_workflow(
                         except (asyncio.CancelledError, Exception):
                             pass
 
-                    # Pivot: fetch Moss memory and generate the fresh report
-                    logger.info("[ORCHESTRATOR] Executing canvas pivot.")
+                    # Pivot: fetch Moss safety memory and generate the Clinical Hold Risk Assessment
+                    logger.info("[ORCHESTRATOR] Executing Clinical Hold Risk Assessment pivot.")
                     memory_hits, _ = await moss_bus.query_memory(
                         session_id,
-                        "ABORT_TASK obsolete competitive 2026 Cursor in-process memory",
+                        "ABORT_TASK clinical hold ICANS neurotoxicity FDA CAR-T safety signal enrollment",
                     )
                     pivoted, _ = await llm_until_abort(
                         session_id,
                         WRITER_SYSTEM,
                         (
-                            "The previous draft is obsolete. Rewrite the FULL "
-                            "Competitive Analysis Report in Markdown. "
-                            "Pivot immediately based on this Moss memory:\n"
-                            f"{chr(10).join(memory_hits)}\n"
-                            f"Abort reason: {abort_exc.signal.message}\n"
-                            "Lead with the real-time / in-process memory shift. "
-                            "Do not rely on stale 2024–2025 share tables."
+                            "URGENT: The active patient enrollment plan is immediately suspended. "
+                            "Rewrite the entire document as a Clinical Hold Risk Assessment in Markdown.\n\n"
+                            "Structure the assessment as:\n"
+                            "# Clinical Hold Risk Assessment — Phase 3 CAR-T Therapy\n\n"
+                            "## 1. Clinical Hold Trigger\n"
+                            "## 2. Affected Patient Population & Immediate Safety Actions\n"
+                            "## 3. Regulatory Obligations (IND Safety Report, FDA Notification Timeline)\n"
+                            "## 4. Site Communication Protocol\n"
+                            "## 5. Resumption Criteria\n\n"
+                            f"Moss safety intelligence ({len(memory_hits)} documents):\n"
+                            f"{chr(10).join(memory_hits)}\n\n"
+                            f"Clinical hold trigger: {abort_exc.signal.message}\n\n"
+                            "Be precise. This document will be reviewed by the trial medical monitor and "
+                            "submitted to the FDA within 15 calendar days."
                         ),
                     )
                     if pivoted:
