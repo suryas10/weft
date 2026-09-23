@@ -1,4 +1,4 @@
-# Weft 🧵
+# Weft - Zero-Latency Shared Memory for Collaborative AI Agents
 
 > **Zero-Latency In-Process Shared Memory Layer for Collaborative Multi-Agent Systems**
 > *Built for YC Fall 2026 × Moss: The Zero Latency Builder Sprint (Track 2: Multiplayer AI & Collaborative Agents)*

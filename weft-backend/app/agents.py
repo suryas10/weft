@@ -647,7 +647,7 @@ async def run_multiagent_workflow(
 
     # current_canvas is updated by the Writer task; we pass snapshots to
     # handle_signal so canvas_pivot carries the most recent stale content.
-    current_canvas: str = "# Competitive Analysis Report\n\n"
+    current_canvas: str = "# Phase 3 CAR-T Clinical Trial Enrollment Protocol\n\n"
 
     researcher_task: asyncio.Task = asyncio.create_task(
         researcher_worker(session_id, room_name, goal),
