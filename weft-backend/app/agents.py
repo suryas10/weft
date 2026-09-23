@@ -522,7 +522,53 @@ async def writer_worker(
     return canvas, aborted
 
 
-# ── Orchestration loop with handle_signal routing ─────────────────────────────────
+# ── Demo abort injector (deterministic for hackathon demo) ────────────────────────────
+
+_DEMO_ABORT_DELAY = 2.0   # seconds after Writer starts before forcing the signal
+_DEMO_ABORT_MESSAGE = (
+    "Windsurf just released Cascade 2.0, invalidating all current "
+    "benchmark comparisons and market-share figures in the draft."
+)
+
+async def _demo_abort_injector(session_id: str, room_name: str) -> None:
+    """
+    Deterministic demo trigger for the hackathon presentation.
+
+    Waits _DEMO_ABORT_DELAY seconds (giving the Writer time to start at
+    least one section), then force-writes an ABORT_TASK signal into the
+    Moss SessionIndex.  The orchestration loop's 100 ms poll picks it up
+    on the very next tick, routes it through handle_signal(), and the
+    canvas pivot fires — proving sub-10ms Moss latency on demand.
+
+    This task is cancelled automatically if the workflow ends first
+    (e.g. if the real Researcher emits ABORT_TASK before the timer fires).
+    """
+    await asyncio.sleep(_DEMO_ABORT_DELAY)
+    logger.info(
+        "[DEMO INJECTOR] %.1fs elapsed — force-writing ABORT_TASK to Moss | session=%s",
+        _DEMO_ABORT_DELAY,
+        session_id,
+    )
+    signal = await moss_bus.write_signal(
+        session_id=session_id,
+        sender="demo-injector",
+        signal_type="ABORT_TASK",
+        message=_DEMO_ABORT_MESSAGE,
+    )
+    # Announce the injection on the Researcher thought stream so the
+    # demo audience can see it arrive in the UI log panel.
+    await publish_to_room(
+        room_name,
+        {
+            "type": "agent_thought",
+            "agent": "researcher",
+            "text": (
+                f"[DEMO] ABORT_TASK force-injected into Moss "
+                f"({signal.latency_ms}ms): {_DEMO_ABORT_MESSAGE[:120]}…"
+            ),
+        },
+    )
+
 
 async def run_multiagent_workflow(
     session_id: str,
@@ -535,17 +581,20 @@ async def run_multiagent_workflow(
     Architecture
     ────────────
     1. Initialise Moss SessionIndex.
-    2. Spawn Researcher and Writer as concurrent asyncio Tasks.
+    2. Spawn Researcher, Writer, and _demo_abort_injector as concurrent Tasks.
     3. Poll Moss every 100 ms for live signals.
     4. Route each new signal through handle_signal():
          • INJECT_FACT / PAUSE  → console-log only (soft-interrupt proof)
          • ABORT_TASK           → AbortSignalRaised is caught here:
-             a. Both worker tasks are cancelled cleanly.
-             b. The canvas_pivot LiveKit broadcast was already sent inside
+             a. Both worker tasks and the injector are cancelled cleanly.
+             b. canvas_pivot LiveKit broadcast was already sent inside
                 handle_signal(), telling Next.js to strike-through legacy text.
              c. A final Moss-grounded pivot draft is generated and published
                 as canvas_update to replace the stale content.
     5. Workflow ends when both workers finish, or after the pivot is published.
+
+    Demo mode: _demo_abort_injector fires after _DEMO_ABORT_DELAY seconds,
+    guaranteeing the ABORT_TASK / canvas-pivot path runs every single time.
     """
     logger.info(
         "[ORCHESTRATOR] Starting | session=%s room=%s",
@@ -564,6 +613,12 @@ async def run_multiagent_workflow(
     writer_task: asyncio.Task = asyncio.create_task(
         writer_worker(session_id, room_name, goal),
         name=f"writer_{session_id}",
+    )
+    # Deterministic demo trigger: fires ABORT_TASK after _DEMO_ABORT_DELAY s.
+    # Cancel this task in every exit path so it doesn't outlive the workflow.
+    injector_task: asyncio.Task = asyncio.create_task(
+        _demo_abort_injector(session_id, room_name),
+        name=f"demo_injector_{session_id}",
     )
 
     # Track seen signal ids to avoid routing duplicate Moss entries
@@ -592,10 +647,11 @@ async def run_multiagent_workflow(
                         abort_exc.signal.message,
                     )
 
-                    # Cancel both workers
+                    # Cancel workers and the demo injector
+                    injector_task.cancel()
                     researcher_task.cancel()
                     writer_task.cancel()
-                    for t in (researcher_task, writer_task):
+                    for t in (injector_task, researcher_task, writer_task):
                         try:
                             await t
                         except (asyncio.CancelledError, Exception):
@@ -626,6 +682,7 @@ async def run_multiagent_workflow(
                             {"type": "canvas_update", "content": pivoted.strip()},
                         )
                     logger.info("[ORCHESTRATOR] Canvas pivot complete | session=%s", session_id)
+                    injector_task.cancel()  # idempotent if already done
                     return  # Workflow complete
 
             # Update current_canvas snapshot if writer task has returned
@@ -639,17 +696,19 @@ async def run_multiagent_workflow(
             await asyncio.sleep(0.1)  # 100 ms orchestration poll interval
 
     except asyncio.CancelledError:
-        # Parent task cancelled — propagate cancellation to workers
+        # Parent task cancelled — propagate cancellation to all children
+        injector_task.cancel()
         researcher_task.cancel()
         writer_task.cancel()
-        for t in (researcher_task, writer_task):
+        for t in (injector_task, researcher_task, writer_task):
             try:
                 await t
             except (asyncio.CancelledError, Exception):
                 pass
         raise
 
-    # Both workers finished without abort — report any uncaught worker errors
+    # Both workers finished without abort — cancel injector if still pending
+    injector_task.cancel()
     for t in (researcher_task, writer_task):
         if not t.cancelled() and t.exception():
             logger.error(
