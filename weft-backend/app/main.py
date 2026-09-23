@@ -30,6 +30,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.get("/")
+async def root():
+    return {
+        "status": "online", 
+        "service": "weft-orchestration-bus", 
+        "memory": "moss-in-process-active"
+    }
+    
 _workers: Dict[str, asyncio.Task] = {}
 
 
