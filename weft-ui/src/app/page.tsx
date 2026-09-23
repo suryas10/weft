@@ -338,7 +338,7 @@ export default function WeftWorkspace() {
             <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-3 flex flex-col gap-2">
               <div className="flex items-center justify-between border-b border-zinc-800 pb-2">
                 <span className="text-xs font-semibold text-blue-400 flex items-center gap-1.5">
-                  <Terminal className="w-3.5 h-3.5" /> Clinical Safety Researcher
+                  <Terminal className="w-3.5 h-3.5" /> Researcher Agent (Node A)
                 </span>
                 <span className="text-[10px] text-zinc-500 font-mono">Parallel Worker 1</span>
               </div>
@@ -402,7 +402,7 @@ export default function WeftWorkspace() {
             <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-3 flex flex-col gap-2">
               <div className="flex items-center justify-between border-b border-zinc-800 pb-2">
                 <span className="text-xs font-semibold text-purple-400 flex items-center gap-1.5">
-                  <Terminal className="w-3.5 h-3.5" /> Clinical Trial Writer
+                  <Terminal className="w-3.5 h-3.5" /> Writer Agent (Node B)
                 </span>
                 <span className="text-[10px] text-zinc-500 font-mono">Parallel Worker 2</span>
               </div>

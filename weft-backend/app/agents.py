@@ -336,7 +336,7 @@ async def llm_until_abort(
 
 async def researcher_worker(session_id: str, room_name: str, goal: str) -> None:
     """
-    Clinical Safety Researcher agent: queries Gemini for CAR-T safety data,
+    Researcher Agent (Node A): queries Gemini for CAR-T safety data,
     neurotoxicity profiles, and active FDA/EMA communications. Writes
     ABORT_TASK to Moss if a safety signal would invalidate the enrollment plan.
     All LLM calls are protected by the exponential back-off in call_hidevs_llm.
@@ -435,7 +435,7 @@ async def writer_worker(
     session_id: str, room_name: str, goal: str
 ) -> tuple[str, Optional[Signal]]:
     """
-    Clinical Trial Writer agent: drafts an Active Patient Enrollment Plan
+    Writer Agent (Node B): drafts an Active Patient Enrollment Plan
     section-by-section, reading Moss safety memory on each iteration.
     Halts immediately on ABORT_TASK and pivots to a Clinical Hold Risk Assessment.
 
@@ -447,7 +447,7 @@ async def writer_worker(
         room_name,
         {
             "type": "canvas_update",
-            "content": canvas + "*Clinical Trial Writer connected. Drafting enrollment plan from safety research…*",
+            "content": canvas + "*Writer Agent (Node B) connected. Drafting enrollment plan from safety research…*",
         },
     )
 
