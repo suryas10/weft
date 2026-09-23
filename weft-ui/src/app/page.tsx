@@ -32,10 +32,18 @@ interface LiveKitSession {
   sessionId: string;
 }
 
+interface PivotData {
+  reason: string;
+  stale_content: string;
+  sender: string;
+  latency_ms: number;
+}
+
 type EngineEvent =
   | { type: "agent_thought"; agent: string; text: string }
   | { type: "moss_signal"; signal: SignalData }
-  | { type: "canvas_update"; content: string };
+  | { type: "canvas_update"; content: string }
+  | { type: "canvas_pivot" } & PivotData;
 
 function EngineDataChannel({
   onEvent,
@@ -61,6 +69,9 @@ export default function WeftWorkspace() {
   const [canvasContent, setCanvasContent] = useState<string>(
     "# Collaborative Report: AI Agent Architectures\n\n*Click 'Launch Autonomous Workflow' to observe real-time agent coordination via Weft Shared Memory.*"
   );
+  const [isPivoting, setIsPivoting] = useState(false);
+  const [staleContent, setStaleContent] = useState<string | null>(null);
+  const [pivotReason, setPivotReason] = useState<string | null>(null);
   const [lkSession, setLkSession] = useState<LiveKitSession | null>(null);
   const startedRef = useRef(false);
 
@@ -74,7 +85,19 @@ export default function WeftWorkspace() {
     } else if (data.type === "moss_signal") {
       setActiveSignal(data.signal);
     } else if (data.type === "canvas_update") {
+      // Fresh draft arrived — clear pivot state and show new content
       setCanvasContent(data.content);
+      setIsPivoting(false);
+      setStaleContent(null);
+    } else if (data.type === "canvas_pivot") {
+      // ABORT_TASK triggered: freeze the stale draft, begin pivot phase
+      setStaleContent(data.stale_content);
+      setPivotReason(data.reason);
+      setIsPivoting(true);
+      setWriterLogs((prev) => [
+        ...prev,
+        `[ABORT_TASK via ${data.sender}] Canvas pivot triggered (${data.latency_ms}ms). Awaiting fresh draft…`,
+      ]);
     }
   }, []);
 
@@ -140,6 +163,9 @@ export default function WeftWorkspace() {
     setCanvasContent(
       "# Collaborative Report: AI Agent Architectures\n\n*Ready for execution.*"
     );
+    setIsPivoting(false);
+    setStaleContent(null);
+    setPivotReason(null);
   };
 
   const shell = (
@@ -186,11 +212,63 @@ export default function WeftWorkspace() {
             <div className="flex items-center gap-2 text-zinc-500 text-xs font-mono">
               <FileText className="w-4 h-4 text-zinc-400" />
               <span>LIVE ARTIFACT CANVAS &bull; REAL-TIME AGENT OUTPUT</span>
+              {isPivoting && (
+                <span className="ml-auto flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-amber-950/60 border border-amber-600/40 text-amber-400 text-[10px] font-semibold animate-pulse">
+                  <Zap className="w-3 h-3 fill-amber-400" />
+                  PIVOTING CANVAS
+                </span>
+              )}
             </div>
-            
-            <div className="min-h-[500px] bg-zinc-900/30 border border-zinc-800/80 rounded-xl p-6 font-mono text-sm leading-relaxed whitespace-pre-wrap text-zinc-200 shadow-2xl">
-              {canvasContent}
-            </div>
+
+            {/* Pivot phase: stale content with strikethrough overlay */}
+            {isPivoting && staleContent ? (
+              <div className="flex flex-col gap-3">
+                {/* Strikethrough stale draft */}
+                <div className="relative min-h-[200px] bg-zinc-900/20 border border-rose-800/40 rounded-xl p-6 font-mono text-sm leading-relaxed whitespace-pre-wrap text-zinc-500 shadow-inner overflow-hidden">
+                  <div className="line-through opacity-50 select-none">{staleContent}</div>
+                  {/* Red diagonal cross-out overlay */}
+                  <div
+                    className="absolute inset-0 pointer-events-none rounded-xl"
+                    style={{
+                      background:
+                        "repeating-linear-gradient(-45deg, transparent, transparent 8px, rgba(239,68,68,0.04) 8px, rgba(239,68,68,0.04) 9px)",
+                    }}
+                  />
+                  <div className="absolute top-2 right-3 text-[10px] font-bold text-rose-500 uppercase tracking-widest">
+                    STALE — ABORTED
+                  </div>
+                </div>
+
+                {/* Pivot reason banner */}
+                {pivotReason && (
+                  <div className="flex items-start gap-2 bg-amber-950/30 border border-amber-700/40 rounded-lg p-3 text-xs font-mono text-amber-300">
+                    <AlertTriangle className="w-4 h-4 text-amber-400 mt-0.5 flex-shrink-0" />
+                    <div>
+                      <span className="font-bold text-amber-400">ABORT REASON: </span>
+                      {pivotReason}
+                    </div>
+                  </div>
+                )}
+
+                {/* Pulsing "generating pivot" indicator */}
+                <div className="min-h-[120px] bg-zinc-900/30 border border-amber-800/30 rounded-xl p-6 flex items-center justify-center gap-3 text-sm font-mono text-amber-400/70">
+                  <div className="flex gap-1">
+                    {[0, 1, 2].map((i) => (
+                      <div
+                        key={i}
+                        className="w-2 h-2 rounded-full bg-amber-400 animate-bounce"
+                        style={{ animationDelay: `${i * 0.15}s` }}
+                      />
+                    ))}
+                  </div>
+                  Generating pivoted analysis from Moss memory…
+                </div>
+              </div>
+            ) : (
+              <div className="min-h-[500px] bg-zinc-900/30 border border-zinc-800/80 rounded-xl p-6 font-mono text-sm leading-relaxed whitespace-pre-wrap text-zinc-200 shadow-2xl">
+                {canvasContent}
+              </div>
+            )}
           </div>
         </div>
 

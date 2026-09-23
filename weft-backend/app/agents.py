@@ -1,6 +1,33 @@
+"""
+agents.py — Weft Multi-Agent Orchestration Engine
+==================================================
+Key upgrades in this revision
+──────────────────────
+1. Exponential back-off on Gemini/HiDevs HTTP 429 rate-limit responses
+   (max 5 retries, initial delay 1 s, cap 32 s, with ±25 % jitter).
+
+2. handle_signal() — central Moss signal router used in the
+   run_multiagent_workflow generation loop:
+     • INJECT_FACT  → console log only   (soft-interrupt, non-blocking)
+     • PAUSE        → console log only   (soft-interrupt, non-blocking)
+     • ABORT_TASK   → raises AbortSignalRaised, breaks the loop,
+                       broadcasts canvas_pivot via LiveKit data channel
+                       so the Next.js UI can strike-through stale text
+                       and render the freshly-pivoted draft.
+
+3. run_multiagent_workflow() — replaces the old asyncio.gather with a
+   structured orchestration loop that polls Moss every 100 ms on every
+   iteration and routes signals through handle_signal().
+
+4. run_agent_worker() is kept as the FastAPI entry-point, now calling
+   run_multiagent_workflow() instead of the old gather.
+"""
+
 import asyncio
 import json
+import logging
 import os
+import random
 from typing import Optional
 
 from pathlib import Path
@@ -13,12 +40,29 @@ from app.moss_store import Signal, moss_bus
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
+logger = logging.getLogger("weft.agents")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+)
+
+# ── Environment ────────────────────────────────────────────────────────────────────────
+
 HIDEVS_API_KEY = os.getenv("HIDEVS_API_KEY", "")
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://llm.hidevs.xyz/v1")
 LLM_MODEL = os.getenv("LLM_MODEL", "gemini-3.6-flash")
 LIVEKIT_URL = os.getenv("LIVEKIT_URL", "")
 LIVEKIT_API_KEY = os.getenv("LIVEKIT_API_KEY", "")
 LIVEKIT_API_SECRET = os.getenv("LIVEKIT_API_SECRET", "")
+
+# ── Retry / back-off config ─────────────────────────────────────────────────────────────
+
+_MAX_RETRIES = 5          # maximum number of 429-retry attempts
+_BACKOFF_BASE = 1.0       # initial wait in seconds
+_BACKOFF_CAP = 32.0       # maximum wait cap in seconds
+_JITTER_FACTOR = 0.25     # ±25 % random jitter
+
+# ── System prompts ───────────────────────────────────────────────────────────────────────
 
 RESEARCHER_SYSTEM = (
     "You are the Weft Researcher agent. Investigate the competitive landscape of "
@@ -33,16 +77,32 @@ WRITER_SYSTEM = (
 )
 
 
+# ── Custom exception for abort escalation ───────────────────────────────────────────
+
+class AbortSignalRaised(Exception):
+    """Raised by handle_signal when an ABORT_TASK signal is routed.
+
+    Carries the original Moss Signal so the orchestration loop can
+    surface reason, sender, and latency metadata to the UI and logs.
+    """
+    def __init__(self, signal: Signal) -> None:
+        super().__init__(signal.message)
+        self.signal = signal
+
+
+# ── LiveKit helpers ────────────────────────────────────────────────────────────────────
+
 def _livekit_http_url() -> str:
     url = LIVEKIT_URL
     if url.startswith("wss://"):
-        url = "https://" + url[len("wss://") :]
+        url = "https://" + url[len("wss://"):]
     elif url.startswith("ws://"):
-        url = "http://" + url[len("ws://") :]
+        url = "http://" + url[len("ws://"):]
     return url
 
 
 async def publish_to_room(room_name: str, payload: dict) -> None:
+    """Broadcast a JSON payload to every participant in a LiveKit room."""
     lk = LiveKitAPI(_livekit_http_url(), LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
     try:
         request = SendDataRequest(
@@ -56,8 +116,18 @@ async def publish_to_room(room_name: str, payload: dict) -> None:
         await lk.aclose()
 
 
+# ── LLM wrapper with exponential back-off on HTTP 429 ────────────────────────────
+
 async def call_hidevs_llm(system_prompt: str, user_prompt: str) -> str:
-    """Call Gemini 3.6 Flash via the HiDevs API gateway."""
+    """
+    Call Gemini 3.6 Flash via the HiDevs API gateway.
+
+    Implements full-jitter exponential back-off for HTTP 429 (Too Many Requests):
+      wait = min(BASE * 2^attempt, CAP) * uniform(1 - JITTER, 1 + JITTER)
+
+    After _MAX_RETRIES exhausted, returns a structured fallback string so the
+    rest of the workflow continues gracefully instead of raising.
+    """
     headers = {
         "Authorization": f"Bearer {HIDEVS_API_KEY}",
         "Content-Type": "application/json",
@@ -71,33 +141,170 @@ async def call_hidevs_llm(system_prompt: str, user_prompt: str) -> str:
         "temperature": 0.4,
     }
 
-    try:
-        async with httpx.AsyncClient(timeout=45.0) as client:
-            resp = await client.post(
-                f"{LLM_BASE_URL}/chat/completions",
-                headers=headers,
-                json=payload,
-            )
+    attempt = 0
+    last_status: Optional[int] = None
+
+    while attempt <= _MAX_RETRIES:
+        try:
+            async with httpx.AsyncClient(timeout=45.0) as client:
+                resp = await client.post(
+                    f"{LLM_BASE_URL}/chat/completions",
+                    headers=headers,
+                    json=payload,
+                )
+
             if resp.status_code == 200:
                 data = resp.json()
                 return data["choices"][0]["message"]["content"]
+
+            if resp.status_code == 429:
+                last_status = 429
+                # Full-jitter back-off: spread load across the retry window
+                raw_delay = min(_BACKOFF_BASE * (2 ** attempt), _BACKOFF_CAP)
+                jitter = raw_delay * _JITTER_FACTOR
+                delay = raw_delay + random.uniform(-jitter, jitter)
+                logger.warning(
+                    "Gemini 429 rate-limit hit (attempt %d/%d). "
+                    "Back-off %.2fs before retry.",
+                    attempt + 1,
+                    _MAX_RETRIES,
+                    delay,
+                )
+                await asyncio.sleep(delay)
+                attempt += 1
+                continue
+
+            # Non-429, non-200 — return fallback immediately, no retry
+            last_status = resp.status_code
+            logger.error("LLM request failed with status %d.", resp.status_code)
             return (
                 f"[Fallback] Competitive scan incomplete (LLM status {resp.status_code}). "
                 "Treat 2024–2025 copilot benchmarks as potentially obsolete versus 2026."
             )
-    except asyncio.CancelledError:
-        raise
-    except Exception:
-        return (
-            "[Fallback] Live research unavailable. Baseline 2025 copilot share figures "
-            "are likely stale relative to Cursor 2.0 and in-process agent memory systems."
+
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # network errors, timeouts, decode failures
+            logger.exception("LLM request raised an exception: %s", exc)
+            return (
+                "[Fallback] Live research unavailable. Baseline 2025 copilot share figures "
+                "are likely stale relative to Cursor 2.0 and in-process agent memory systems."
+            )
+
+    # Exhausted all retries on repeated 429s
+    logger.error(
+        "Gemini API exhausted all %d retries (last status %s). Returning fallback.",
+        _MAX_RETRIES,
+        last_status,
+    )
+    return (
+        f"[Fallback — 429 after {_MAX_RETRIES} retries] "
+        "Live Gemini data unavailable due to rate limiting. "
+        "Moss in-process memory is the only reliable data source right now."
+    )
+
+
+# ── Moss signal router ─────────────────────────────────────────────────────────────────────
+
+async def handle_signal(
+    signal: Signal,
+    session_id: str,
+    room_name: str,
+    current_canvas: str,
+) -> None:
+    """
+    Central router for Moss signals, called from run_multiagent_workflow.
+
+    Routing table
+    ─────────────
+    INJECT_FACT  → console log (soft-interrupt). Proves the architecture
+                   handles mid-turn fact injection without breaking flow.
+
+    PAUSE        → console log (soft-interrupt). Proves the architecture
+                   handles pause signals without terminating workers.
+
+    ABORT_TASK   → active execution:
+                   1. Publishes moss_signal to the Weft UI panel.
+                   2. Publishes canvas_pivot so the Next.js canvas can
+                      strike-through stale content and await the fresh draft.
+                   3. Raises AbortSignalRaised to break the caller's loop.
+
+    Any other type is logged as a warning and silently ignored.
+    """
+    sig_type = signal.signal_type.upper()
+
+    # — Soft interrupt: INJECT_FACT ──────────────────────────────────────────────────
+    if sig_type == "INJECT_FACT":
+        logger.info(
+            "[INJECT_FACT] Soft-interrupt | session=%s sender=%s | %s",
+            session_id,
+            signal.sender,
+            signal.message,
+        )
+        # Non-blocking — generation loop continues uninterrupted.
+        return
+
+    # — Soft interrupt: PAUSE ────────────────────────────────────────────────────────
+    if sig_type == "PAUSE":
+        logger.info(
+            "[PAUSE] Soft-interrupt | session=%s sender=%s | %s",
+            session_id,
+            signal.sender,
+            signal.message,
+        )
+        # Non-blocking — generation loop continues uninterrupted.
+        return
+
+    # — Hard interrupt: ABORT_TASK ────────────────────────────────────────────────
+    if sig_type == "ABORT_TASK":
+        logger.warning(
+            "[ABORT_TASK] Hard-interrupt | session=%s sender=%s latency=%.2fms | %s",
+            session_id,
+            signal.sender,
+            signal.latency_ms,
+            signal.message,
         )
 
+        # Step 1: surface the signal in the Moss panel on the UI
+        await publish_to_room(
+            room_name,
+            {
+                "type": "moss_signal",
+                "signal": signal.model_dump(),
+            },
+        )
+
+        # Step 2: broadcast canvas_pivot so Next.js can:
+        #   • strike-through the stale_content (legacy draft)
+        #   • show a "pivoting…" indicator while the fresh draft arrives
+        await publish_to_room(
+            room_name,
+            {
+                "type": "canvas_pivot",
+                "reason": signal.message,
+                "stale_content": current_canvas,
+                "sender": signal.sender,
+                "latency_ms": signal.latency_ms,
+            },
+        )
+
+        # Step 3: raise to break the orchestration loop
+        raise AbortSignalRaised(signal)
+
+    # — Unknown signal type ────────────────────────────────────────────────────────
+    logger.warning(
+        "[UNKNOWN SIGNAL] type='%s' sender='%s' | Ignoring.",
+        signal.signal_type,
+        signal.sender,
+    )
+
+
+# ── Abort-aware LLM call ──────────────────────────────────────────────────────────────────
 
 async def llm_until_abort(
     session_id: str, system_prompt: str, user_prompt: str
 ) -> tuple[Optional[str], Optional[Signal]]:
-    """Run an LLM call while polling Moss; cancel immediately on ABORT_TASK."""
+    """Run an LLM call while polling Moss every 50 ms; cancel immediately on ABORT_TASK."""
     llm_task = asyncio.create_task(call_hidevs_llm(system_prompt, user_prompt))
     try:
         while not llm_task.done():
@@ -116,7 +323,14 @@ async def llm_until_abort(
         raise
 
 
+# ── Researcher worker ─────────────────────────────────────────────────────────────────────
+
 async def researcher_worker(session_id: str, room_name: str, goal: str) -> None:
+    """
+    Researcher agent: queries Gemini for competitive intelligence, evaluates
+    source freshness, and writes ABORT_TASK to Moss if stale data is detected.
+    All LLM calls are protected by the exponential back-off in call_hidevs_llm.
+    """
     await publish_to_room(
         room_name,
         {
@@ -198,7 +412,18 @@ async def researcher_worker(session_id: str, room_name: str, goal: str) -> None:
         )
 
 
-async def writer_worker(session_id: str, room_name: str, goal: str) -> None:
+# ── Writer worker ──────────────────────────────────────────────────────────────────────────
+
+async def writer_worker(
+    session_id: str, room_name: str, goal: str
+) -> tuple[str, Optional[Signal]]:
+    """
+    Writer agent: drafts a Competitive Analysis Report section-by-section,
+    reading Moss memory on each iteration and halting immediately on ABORT_TASK.
+
+    Returns (final_canvas, aborted_signal) so the orchestration loop can
+    track the most recent canvas content when routing signals.
+    """
     canvas = "# Competitive Analysis Report\n\n"
     await publish_to_room(
         room_name,
@@ -256,13 +481,6 @@ async def writer_worker(session_id: str, room_name: str, goal: str) -> None:
         await publish_to_room(
             room_name,
             {
-                "type": "moss_signal",
-                "signal": aborted.model_dump(),
-            },
-        )
-        await publish_to_room(
-            room_name,
-            {
                 "type": "agent_thought",
                 "agent": "writer",
                 "text": (
@@ -282,12 +500,14 @@ async def writer_worker(session_id: str, room_name: str, goal: str) -> None:
                 "in Markdown. Pivot immediately based on this Moss memory:\n"
                 f"{chr(10).join(memory_hits)}\n"
                 f"Abort reason: {aborted.message}\n"
-                "Lead with the real-time / in-process memory shift. Do not rely on stale 2024–2025 share tables."
+                "Lead with the real-time / in-process memory shift. "
+                "Do not rely on stale 2024–2025 share tables."
             ),
         )
         if pivoted:
+            canvas = pivoted.strip()
             await publish_to_room(
-                room_name, {"type": "canvas_update", "content": pivoted.strip()}
+                room_name, {"type": "canvas_update", "content": canvas}
             )
     else:
         await publish_to_room(
@@ -299,11 +519,156 @@ async def writer_worker(session_id: str, room_name: str, goal: str) -> None:
             },
         )
 
+    return canvas, aborted
+
+
+# ── Orchestration loop with handle_signal routing ─────────────────────────────────
+
+async def run_multiagent_workflow(
+    session_id: str,
+    room_name: str,
+    goal: str,
+) -> None:
+    """
+    Primary orchestration loop for a Weft session.
+
+    Architecture
+    ────────────
+    1. Initialise Moss SessionIndex.
+    2. Spawn Researcher and Writer as concurrent asyncio Tasks.
+    3. Poll Moss every 100 ms for live signals.
+    4. Route each new signal through handle_signal():
+         • INJECT_FACT / PAUSE  → console-log only (soft-interrupt proof)
+         • ABORT_TASK           → AbortSignalRaised is caught here:
+             a. Both worker tasks are cancelled cleanly.
+             b. The canvas_pivot LiveKit broadcast was already sent inside
+                handle_signal(), telling Next.js to strike-through legacy text.
+             c. A final Moss-grounded pivot draft is generated and published
+                as canvas_update to replace the stale content.
+    5. Workflow ends when both workers finish, or after the pivot is published.
+    """
+    logger.info(
+        "[ORCHESTRATOR] Starting | session=%s room=%s",
+        session_id,
+        room_name,
+    )
+
+    # current_canvas is updated by the Writer task; we pass snapshots to
+    # handle_signal so canvas_pivot carries the most recent stale content.
+    current_canvas: str = "# Competitive Analysis Report\n\n"
+
+    researcher_task: asyncio.Task = asyncio.create_task(
+        researcher_worker(session_id, room_name, goal),
+        name=f"researcher_{session_id}",
+    )
+    writer_task: asyncio.Task = asyncio.create_task(
+        writer_worker(session_id, room_name, goal),
+        name=f"writer_{session_id}",
+    )
+
+    # Track seen signal ids to avoid routing duplicate Moss entries
+    _seen_signal_ids: set[str] = set()
+
+    try:
+        while not (researcher_task.done() and writer_task.done()):
+            # — Poll Moss for any new signal ────────────────────────────────────
+            signal: Optional[Signal] = await moss_bus.detect_abort(session_id)
+
+            if signal and signal.id not in _seen_signal_ids:
+                _seen_signal_ids.add(signal.id)
+                try:
+                    await handle_signal(
+                        signal=signal,
+                        session_id=session_id,
+                        room_name=room_name,
+                        current_canvas=current_canvas,
+                    )
+                    # INJECT_FACT / PAUSE return here — loop continues.
+
+                except AbortSignalRaised as abort_exc:
+                    logger.warning(
+                        "[ORCHESTRATOR] AbortSignalRaised — cancelling workers "
+                        "and executing canvas pivot. Reason: %s",
+                        abort_exc.signal.message,
+                    )
+
+                    # Cancel both workers
+                    researcher_task.cancel()
+                    writer_task.cancel()
+                    for t in (researcher_task, writer_task):
+                        try:
+                            await t
+                        except (asyncio.CancelledError, Exception):
+                            pass
+
+                    # Pivot: fetch Moss memory and generate the fresh report
+                    logger.info("[ORCHESTRATOR] Executing canvas pivot.")
+                    memory_hits, _ = await moss_bus.query_memory(
+                        session_id,
+                        "ABORT_TASK obsolete competitive 2026 Cursor in-process memory",
+                    )
+                    pivoted, _ = await llm_until_abort(
+                        session_id,
+                        WRITER_SYSTEM,
+                        (
+                            "The previous draft is obsolete. Rewrite the FULL "
+                            "Competitive Analysis Report in Markdown. "
+                            "Pivot immediately based on this Moss memory:\n"
+                            f"{chr(10).join(memory_hits)}\n"
+                            f"Abort reason: {abort_exc.signal.message}\n"
+                            "Lead with the real-time / in-process memory shift. "
+                            "Do not rely on stale 2024–2025 share tables."
+                        ),
+                    )
+                    if pivoted:
+                        await publish_to_room(
+                            room_name,
+                            {"type": "canvas_update", "content": pivoted.strip()},
+                        )
+                    logger.info("[ORCHESTRATOR] Canvas pivot complete | session=%s", session_id)
+                    return  # Workflow complete
+
+            # Update current_canvas snapshot if writer task has returned
+            if writer_task.done() and not writer_task.cancelled():
+                exc = writer_task.exception() if not writer_task.cancelled() else None
+                if exc is None:
+                    result = writer_task.result()
+                    if isinstance(result, tuple) and len(result) == 2:
+                        current_canvas = result[0] or current_canvas
+
+            await asyncio.sleep(0.1)  # 100 ms orchestration poll interval
+
+    except asyncio.CancelledError:
+        # Parent task cancelled — propagate cancellation to workers
+        researcher_task.cancel()
+        writer_task.cancel()
+        for t in (researcher_task, writer_task):
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):
+                pass
+        raise
+
+    # Both workers finished without abort — report any uncaught worker errors
+    for t in (researcher_task, writer_task):
+        if not t.cancelled() and t.exception():
+            logger.error(
+                "[ORCHESTRATOR] Worker '%s' raised: %s",
+                t.get_name(),
+                t.exception(),
+            )
+
+    logger.info("[ORCHESTRATOR] Workflow complete | session=%s", session_id)
+
+
+# ── FastAPI entry-point ──────────────────────────────────────────────────────────────────────
 
 async def run_agent_worker(session_id: str, room_name: str, goal: str) -> None:
-    """LiveKit agent worker: Researcher + Writer loops sharing a Moss SessionIndex."""
+    """
+    LiveKit agent worker entry-point, called by FastAPI /api/session/init.
+
+    Initialises the Moss SessionIndex for the session and delegates to the
+    run_multiagent_workflow orchestration loop.
+    """
     await moss_bus.init_session(session_id)
-    await asyncio.gather(
-        researcher_worker(session_id, room_name, goal),
-        writer_worker(session_id, room_name, goal),
-    )
+    await run_multiagent_workflow(session_id, room_name, goal)
