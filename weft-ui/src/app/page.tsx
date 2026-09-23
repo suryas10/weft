@@ -14,7 +14,7 @@ import {
   Cpu,
 } from "lucide-react";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "https://weft-7ztu.onrender.com";
 
 interface SignalData {
   id: string;
@@ -152,8 +152,7 @@ export default function WeftWorkspace() {
     } catch (error) {
       setIsRunning(false);
       setCanvasContent(
-        `# Collaborative Report: Connection Error\n\nCould not mint a LiveKit token.\n\n${
-          error instanceof Error ? error.message : "Unknown error"
+        `# Collaborative Report: Connection Error\n\nCould not mint a LiveKit token.\n\n${error instanceof Error ? error.message : "Unknown error"
         }`
       );
     }
@@ -253,18 +252,16 @@ export default function WeftWorkspace() {
                 <div className="flex items-center gap-4">
                   <span className="text-xs font-mono">
                     <span className="text-zinc-500">Tokens Saved: </span>
-                    <span className={`text-emerald-400 font-bold tabular-nums ${
-                      computeSaved.tokens < 1420 ? "animate-pulse" : ""
-                    }`}>
+                    <span className={`text-emerald-400 font-bold tabular-nums ${computeSaved.tokens < 1420 ? "animate-pulse" : ""
+                      }`}>
                       {computeSaved.tokens.toLocaleString()}
                     </span>
                   </span>
                   <span className="text-zinc-700">|</span>
                   <span className="text-xs font-mono">
                     <span className="text-zinc-500">Compute Cut: </span>
-                    <span className={`text-emerald-400 font-bold tabular-nums ${
-                      computeSaved.computeSec < 28.4 ? "animate-pulse" : ""
-                    }`}>
+                    <span className={`text-emerald-400 font-bold tabular-nums ${computeSaved.computeSec < 28.4 ? "animate-pulse" : ""
+                      }`}>
                       {computeSaved.computeSec.toFixed(1)}s
                     </span>
                   </span>
@@ -357,11 +354,10 @@ export default function WeftWorkspace() {
             </div>
 
             {/* Moss Shared Memory Layer (Center Highlight) */}
-            <div className={`border rounded-lg p-3.5 transition-all duration-300 ${
-              activeSignal 
-                ? "bg-amber-950/20 border-amber-500/50 shadow-lg shadow-amber-500/10" 
+            <div className={`border rounded-lg p-3.5 transition-all duration-300 ${activeSignal
+                ? "bg-amber-950/20 border-amber-500/50 shadow-lg shadow-amber-500/10"
                 : "bg-zinc-900/60 border-zinc-800"
-            }`}>
+              }`}>
               <div className="flex items-center justify-between pb-2 border-b border-zinc-800/80">
                 <span className="text-xs font-bold text-amber-400 flex items-center gap-1.5">
                   <Zap className="w-4 h-4 fill-amber-400 text-amber-400" /> Moss Shared Memory Bus
